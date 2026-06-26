@@ -82,7 +82,7 @@
 | `id` | PK |
 | `gacha_campaign_id` | 關聯活動 FK |
 | `type` | 獎項類型 (limited 限量 / fallback 兜底) |
-| `prob_pct` | 命中機率權重 (%) |
+| `prob_bps` | 命中機率權重 (萬分比，10000 = 100%) |
 | `init_stock` | 初始發行總量 |
 | `remained_stock` | 剩餘可抽庫存 (Worker 依此執行 `UPDATE ... WHERE remained_stock >= ?` 樂觀鎖) |
 

@@ -1,10 +1,18 @@
 server:
   port: 8080
 
+database:
+  dsn: "root:rootpass@tcp(localhost:3306)/momo_gacha?parseTime=true&loc=Local"
+
 redis:
   addr: "localhost:6379"
   password: ""
   db: 0
 
-mq:
-  type: "redis" # or "channel" for testing/fallback
+kafka:
+  brokers:
+    - "localhost:9092"
+  topic: "gacha.reward.granted"
+  dlq_topic: "gacha.reward.dlq"
+  group_id: "gacha-worker-group"
+
