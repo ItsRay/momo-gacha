@@ -131,6 +131,7 @@
 **1. POST `/v1/gachas/{id}/draw` (執行抽獎)**
 
 * **Headers**: `X-User-Id: {user_id}`, `Idempotency-Key: {uuid}`
+  > **💡 身分驗證架構設計**：本服務預期部署在 API Gateway 後方。API Gateway 負責集中式的 Token 驗證（如 JWT 或 Session），驗證成功後將用戶識別（User ID）以明碼透過 `X-User-Id` Header 往下傳遞給本抽獎微服務。這使本服務得以保持無狀態 (Stateless)、專注於高併發抽獎業務與效能。
 
 ## 7. 專案目錄結構 (Folder Structure)
 

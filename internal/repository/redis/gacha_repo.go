@@ -241,7 +241,7 @@ func (r *GachaRepository) GetPrizeStock(ctx context.Context, prizeID string) (in
 }
 
 func (r *GachaRepository) GetCampaignWithLiveStock(ctx context.Context, id string) (*domain.Campaign, error) {
-	campaign, err := rctx, id)
+	campaign, err := r.GetCampaign(ctx, id)
 	if err != nil {
 		return nil, err
 	}

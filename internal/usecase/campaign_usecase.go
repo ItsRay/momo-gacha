@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"momo-gacha/internal/domain"
 )
 

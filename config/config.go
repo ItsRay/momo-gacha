@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -59,6 +60,17 @@ func LoadConfig(configPath string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	// Environment variable overrides (convenient for Docker environments)
+	if dsn := os.Getenv("DATABASE_DSN"); dsn != "" {
+		cfg.Database.DSN = dsn
+	}
+	if redisAddr := os.Getenv("REDIS_ADDR"); redisAddr != "" {
+		cfg.Redis.Addr = redisAddr
+	}
+	if kafkaBrokers := os.Getenv("KAFKA_BROKERS"); kafkaBrokers != "" {
+		cfg.Kafka.Brokers = strings.Split(kafkaBrokers, ",")
 	}
 
 	return &cfg, nil

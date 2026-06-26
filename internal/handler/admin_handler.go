@@ -7,6 +7,7 @@ import (
 
 	"momo-gacha/internal/domain"
 	"momo-gacha/internal/usecase"
+	"momo-gacha/pkg/logger"
 	"momo-gacha/pkg/response"
 )
 
@@ -39,6 +40,7 @@ func (h *AdminHandler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
 			return
 		}
+		logger.Error("Failed to create campaign: %v", err)
 		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}
@@ -71,6 +73,7 @@ func (h *AdminHandler) UpdatePrizeWeights(w http.ResponseWriter, r *http.Request
 			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
 			return
 		}
+		logger.Error("Failed to update prize weights: %v", err)
 		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}
@@ -97,6 +100,7 @@ func (h *AdminHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) 
 			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
 			return
 		}
+		logger.Error("Failed to get campaign stats: %v", err)
 		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}

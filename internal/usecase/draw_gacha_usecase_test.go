@@ -25,6 +25,10 @@ func (m *mockCampaignRepo) GetCampaign(ctx context.Context, id string) (*domain.
 	return m.campaign, nil
 }
 
+func (m *mockCampaignRepo) GetCampaignWithLiveStock(ctx context.Context, id string) (*domain.Campaign, error) {
+	return m.campaign, nil
+}
+
 func (m *mockCampaignRepo) UpdatePrizeWeights(ctx context.Context, campaignID string, prizes []domain.Prize) error {
 	return nil
 }
@@ -65,13 +69,17 @@ func (m *mockCampaignRepo) RollbackStock(ctx context.Context, campaignID, prizeI
 }
 
 type mockPublisher struct {
-	events []domain.RewardEvent
-	mu     sync.Mutex
+	events      []domain.RewardEvent
+	mu          sync.Mutex
+	failPublish bool
 }
 
 func (m *mockPublisher) PublishReward(ctx context.Context, event *domain.RewardEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failPublish {
+		return fmt.Errorf("simulated MQ failure")
+	}
 	m.events = append(m.events, *event)
 	return nil
 }
@@ -224,5 +232,48 @@ func TestHighConcurrencyAntiOverselling(t *testing.T) {
 	}
 	if grandStock != 0 {
 		t.Errorf("expected stock to be exactly 0, got %d", grandStock)
+	}
+}
+
+func TestDrawGachaCompensatingTransaction(t *testing.T) {
+	// Campaign has 1 limited prize with stock = 10
+	campaign := &domain.Campaign{
+		ID:     "compensate_campaign",
+		Name:   "Compensate Gacha",
+		Status: domain.CampaignActive,
+		Prizes: []domain.Prize{
+			{ID: "limited_prize", Name: "iPhone 17", Type: domain.PrizeLimited, ProbBps: 10000}, // 100% hit
+			{ID: "fallback", Name: "銘謝惠顧", Type: domain.PrizeFallback, ProbBps: 0},
+		},
+	}
+
+	stockValue := int64(10)
+	repo := &mockCampaignRepo{
+		campaign: campaign,
+		stocks: map[string]*int64{
+			"limited_prize": &stockValue,
+		},
+	}
+
+	// Mock publisher set to FAIL
+	publisher := &mockPublisher{failPublish: true}
+
+	uc := NewDrawGachaUsecase(repo, publisher, nil)
+
+	// Draw Gacha. Expect error since MQ publish fails
+	_, err := uc.Draw(context.Background(), "compensate_campaign", "user_1", "")
+	if err == nil {
+		t.Fatalf("expected error due to MQ publish failure, but got nil")
+	}
+
+	// Verify that the stock has been rolled back and remains 10
+	finalStock, _ := repo.GetPrizeStock(context.Background(), "limited_prize")
+	if finalStock != 10 {
+		t.Errorf("expected stock to be rolled back to 10, but got %d", finalStock)
+	}
+
+	// Verify MQ did not store the event
+	if len(publisher.events) != 0 {
+		t.Errorf("expected no reward event to be published, but got %d events", len(publisher.events))
 	}
 }

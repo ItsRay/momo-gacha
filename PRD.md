@@ -25,7 +25,7 @@
 
 為聚焦展示「高併發處理」與「非同步架構」，本專案收斂以下邊界：
 
-* 透過 API Header `X-User-Id` 進行身分 Mock，略過完整會員登入。
+* 透過 API Header `X-User-Id` 進行身分 Mock，略過完整會員登入（架構設計上預期由最前線的 API Gateway 負責進行 Token 集中驗證，驗證成功後再將用戶 ID 以 `X-User-Id` Header 明碼向下游微服務傳遞）。
 * 略過 DB Transaction 實際資產入帳，專注於「抽獎當下的庫存防護」與「事件觸發」。
 
 ## 5. 附錄：具體情境範例說明
