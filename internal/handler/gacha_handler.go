@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
+	"momo-gacha/internal/domain"
 	"momo-gacha/internal/usecase"
 	"momo-gacha/pkg/response"
 )
@@ -18,11 +20,6 @@ func NewGachaHandler(drawGachaUC usecase.DrawGachaUsecase) *GachaHandler {
 }
 
 func (h *GachaHandler) Draw(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		response.Error(w, http.StatusMethodNotAllowed, 405, "method not allowed")
-		return
-	}
-
 	campaignID := r.PathValue("id")
 	if campaignID == "" {
 		response.Error(w, http.StatusBadRequest, 400, "missing campaign id")
@@ -43,12 +40,17 @@ func (h *GachaHandler) Draw(w http.ResponseWriter, r *http.Request) {
 
 	prize, err := h.drawGachaUC.Draw(r.Context(), campaignID, userID, idempotencyKey)
 	if err != nil {
-		// Return appropriate status codes
-		if err.Error() == "duplicate request" || err.Error() == "request is being processed, please try again later" {
-			response.Error(w, http.StatusConflict, 409, err.Error())
+		var conflictErr *domain.ConflictError
+		if errors.As(err, &conflictErr) {
+			response.Error(w, http.StatusConflict, 409, conflictErr.Error())
 			return
 		}
-		response.Error(w, http.StatusInternalServerError, 500, err.Error())
+		var bizErr *domain.ValidationError
+		if errors.As(err, &bizErr) {
+			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}
 

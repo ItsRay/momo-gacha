@@ -147,3 +147,10 @@ momo-gacha/
 │   └── domain/                   # Domain 層：跨層共用 Structs
 └── ...
 ```
+
+## 8. 未來展望與工程規劃 (Future Roadmap)
+
+* **持久層框架升級 (GORM)**：
+  - **好處**：加速 Admin CRUD 開發；利用 `Preload` 簡化 Campaign 與 Prizes 的關聯寫入；API 預設參數化防止 SQL 注入。
+  - **混合模式**：未來可採「Admin CRUD 使用 GORM」以求高生產力，而「高併發核心與 Worker 批次落庫」維持原生 SQL 以確保極致效能。
+* **可觀測性建置 (Observability)**：導入 OpenTelemetry 鏈路追蹤，並使用 Prometheus / Grafana 監控 Redis 庫存與 Kafka Consumer Lag。

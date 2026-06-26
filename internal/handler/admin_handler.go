@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"momo-gacha/internal/domain"
@@ -20,11 +21,6 @@ func NewAdminHandler(campaignUC usecase.CampaignUsecase) *AdminHandler {
 }
 
 func (h *AdminHandler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		response.Error(w, http.StatusMethodNotAllowed, 405, "method not allowed")
-		return
-	}
-
 	var campaign domain.Campaign
 	if err := json.NewDecoder(r.Body).Decode(&campaign); err != nil {
 		response.Error(w, http.StatusBadRequest, 400, "invalid request body")
@@ -33,7 +29,17 @@ func (h *AdminHandler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 
 	err := h.campaignUC.CreateCampaign(r.Context(), &campaign)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, 500, err.Error())
+		var conflictErr *domain.ConflictError
+		if errors.As(err, &conflictErr) {
+			response.Error(w, http.StatusConflict, 409, conflictErr.Error())
+			return
+		}
+		var bizErr *domain.ValidationError
+		if errors.As(err, &bizErr) {
+			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}
 
@@ -41,11 +47,6 @@ func (h *AdminHandler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) UpdatePrizeWeights(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		response.Error(w, http.StatusMethodNotAllowed, 405, "method not allowed")
-		return
-	}
-
 	campaignID := r.PathValue("id")
 	if campaignID == "" {
 		response.Error(w, http.StatusBadRequest, 400, "missing campaign id")
@@ -60,7 +61,17 @@ func (h *AdminHandler) UpdatePrizeWeights(w http.ResponseWriter, r *http.Request
 
 	err := h.campaignUC.UpdatePrizeWeights(r.Context(), campaignID, prizes)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, 500, err.Error())
+		var conflictErr *domain.ConflictError
+		if errors.As(err, &conflictErr) {
+			response.Error(w, http.StatusConflict, 409, conflictErr.Error())
+			return
+		}
+		var bizErr *domain.ValidationError
+		if errors.As(err, &bizErr) {
+			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}
 
@@ -68,11 +79,6 @@ func (h *AdminHandler) UpdatePrizeWeights(w http.ResponseWriter, r *http.Request
 }
 
 func (h *AdminHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		response.Error(w, http.StatusMethodNotAllowed, 405, "method not allowed")
-		return
-	}
-
 	campaignID := r.PathValue("id")
 	if campaignID == "" {
 		response.Error(w, http.StatusBadRequest, 400, "missing campaign id")
@@ -81,7 +87,17 @@ func (h *AdminHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) 
 
 	campaign, err := h.campaignUC.GetCampaignStats(r.Context(), campaignID)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, 500, err.Error())
+		var conflictErr *domain.ConflictError
+		if errors.As(err, &conflictErr) {
+			response.Error(w, http.StatusConflict, 409, conflictErr.Error())
+			return
+		}
+		var bizErr *domain.ValidationError
+		if errors.As(err, &bizErr) {
+			response.Error(w, http.StatusBadRequest, 400, bizErr.Error())
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, 500, "internal server error")
 		return
 	}
 

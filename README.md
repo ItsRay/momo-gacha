@@ -53,3 +53,10 @@ momo-gacha/
 詳細的啟動步驟與 API 驗證測試將於專案開發完成後在此列出。
 - 啟動 API Server: `go run cmd/api/main.go`
 - 啟動 Background Worker: `go run cmd/worker/main.go`
+
+---
+
+## 未來展望 (Future Roadmap)
+
+* **引進 GORM (ORM)**：提升 Admin CRUD 開發速度與預設防範 SQL 注入；未來規劃採「Admin CRUD 使用 GORM」與「核心高併發/Worker 使用原生 SQL」的混合架構。
+* **可觀測性監控 (Observability)**：導入 OpenTelemetry 鏈路追蹤與 Prometheus + Grafana 指標監控。

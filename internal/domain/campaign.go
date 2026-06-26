@@ -22,6 +22,16 @@ const (
 	PrizeFallback PrizeType = "fallback"
 )
 
+// MaxBasisPoints represents 100% probability in basis points (10000 = 100%).
+const MaxBasisPoints = 10000
+
+// DeductStock result status codes.
+const (
+	DeductStockSuccess    int64 = 1
+	DeductStockNotFound   int64 = -1
+	DeductStockOutOfStock int64 = -2
+)
+
 // Campaign represents the gacha campaign model.
 type Campaign struct {
 	ID        string         `json:"id" db:"id"`
@@ -75,6 +85,13 @@ type CampaignRepository interface {
 	// GetPrizeStock retrieves the current remaining stock of a prize.
 	// Returns the current stock count and an error if any.
 	GetPrizeStock(ctx context.Context, prizeID string) (int, error)
+
+	// GetCampaignWithLiveStock retrieves a campaign with all prize stocks populated with live Redis data.
+	// Dedicated for Admin monitoring endpoints.
+	GetCampaignWithLiveStock(ctx context.Context, id string) (*Campaign, error)
+
+	// RollbackStock atomically increments the stock of a prize (compensating action for failed draws).
+	RollbackStock(ctx context.Context, campaignID, prizeID string, delta int) error
 }
 
 // RewardRepository handles persistence of reward records and stock reconciliation.
@@ -88,4 +105,30 @@ type RewardRepository interface {
 
 	// DeductPrizeStock deducts the stock of a single prize in persistent storage.
 	DeductPrizeStock(ctx context.Context, prizeID string, deductCount int) error
+}
+
+// ValidationError represents client input validation errors (mapped to HTTP 400).
+type ValidationError struct {
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	return e.Message
+}
+
+func NewValidationError(msg string) error {
+	return &ValidationError{Message: msg}
+}
+
+// ConflictError represents state conflict issues (mapped to HTTP 409).
+type ConflictError struct {
+	Message string
+}
+
+func (e *ConflictError) Error() string {
+	return e.Message
+}
+
+func NewConflictError(msg string) error {
+	return &ConflictError{Message: msg}
 }

@@ -11,6 +11,7 @@ import (
 
 	"momo-gacha/internal/domain"
 	"momo-gacha/internal/repository/lua"
+	"momo-gacha/pkg/logger"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
@@ -53,7 +54,7 @@ func (r *GachaRepository) CreateCampaign(ctx context.Context, campaign *domain.C
 
 	// 1. Insert Campaign into MySQL
 	_, err = tx.ExecContext(ctx,
-		"INSERT INTO gacha_campaigns (id, name, status, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())",
+		"INSERT INTO gacha_campaigns (id, name, status) VALUES (?, ?, ?)",
 		campaign.ID, campaign.Name, campaign.Status,
 	)
 	if err != nil {
@@ -63,7 +64,7 @@ func (r *GachaRepository) CreateCampaign(ctx context.Context, campaign *domain.C
 	// 2. Insert Prizes into MySQL
 	for _, prize := range campaign.Prizes {
 		_, err = tx.ExecContext(ctx,
-			"INSERT INTO gacha_prizes (id, gacha_campaign_id, type, name, prob_bps, init_stock, remained_stock, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+			"INSERT INTO gacha_prizes (id, gacha_campaign_id, type, name, prob_bps, init_stock, remained_stock) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			prize.ID, campaign.ID, prize.Type, prize.Name, prize.ProbBps, prize.InitStock, prize.InitStock,
 		)
 		if err != nil {
@@ -76,17 +77,16 @@ func (r *GachaRepository) CreateCampaign(ctx context.Context, campaign *domain.C
 		return err
 	}
 
-	// 3. Initialize Redis stock for limited prizes
+	// 3. Initialize Redis stock for limited prizes (Soft failure: log but do not fail the request)
 	for _, prize := range campaign.Prizes {
 		if prize.Type == domain.PrizeLimited {
-			err = r.rdb.Set(ctx, prizeStockKey(prize.ID), prize.InitStock, 0).Err()
-			if err != nil {
-				return fmt.Errorf("redis set stock failed for prize %s: %w", prize.ID, err)
+			if serr := r.rdb.Set(ctx, prizeStockKey(prize.ID), prize.InitStock, 0).Err(); serr != nil {
+				logger.Warn("Redis stock init failed for prize %s: %v. Relying on cache hydration.", prize.ID, serr)
 			}
 		}
 	}
 
-	// Cache campaign config instantly to Redis
+	// Cache campaign config instantly to Redis (Best effort)
 	r.cacheCampaign(ctx, campaign)
 
 	return nil
@@ -129,7 +129,9 @@ func (r *GachaRepository) GetCampaign(ctx context.Context, id string) (*domain.C
 				exists, err := r.rdb.Exists(ctx, prizeStockKey(prize.ID)).Result()
 				if err == nil && exists == 0 {
 					// If missing, initialize Redis stock from DB remained_stock
-					_ = r.rdb.Set(ctx, prizeStockKey(prize.ID), prize.RemainedStock, 0).Err()
+					if err := r.rdb.Set(ctx, prizeStockKey(prize.ID), prize.RemainedStock, 0).Err(); err != nil {
+						logger.Warn("failed to rebuild Redis stock for prize %s: %v", prize.ID, err)
+					}
 				}
 			}
 		}
@@ -180,29 +182,15 @@ func (r *GachaRepository) UpdatePrizeWeights(ctx context.Context, campaignID str
 	}
 
 	// 2. Invalidate cache in Redis (Delete)
-	_ = r.rdb.Del(ctx, campaignCacheKey(campaignID)).Err()
+	if err := r.rdb.Del(ctx, campaignCacheKey(campaignID)).Err(); err != nil {
+		logger.Error("failed to invalidate campaign cache for campaign %s: %v", campaignID, err)
+	}
 
 	return nil
 }
 
 func (r *GachaRepository) DeductStock(ctx context.Context, campaignID, prizeID string, delta int) (int64, error) {
 	// Run Lua script to decrement stock atomically
-	// Since deductStockScript accepts KEYS[1] as stock key
-	// We want to pass delta as an argument. Wait! The deduct_stock.lua only decr by 1!
-	// Let's modify the Lua script or check it:
-	// Let's look at deduct_stock.lua:
-	// local key = KEYS[1]
-	// ... redis.call('decr', key)
-	// It only decrements by 1! If delta is 1, it works perfectly.
-	// If delta can be larger, we should support DECRBY delta.
-	// For standard draw, delta is always 1. If we support delta in Lua:
-	// We can update the Lua script to:
-	// local key = KEYS[1]
-	// local delta = tonumber(ARGV[1] or 1)
-	// ... redis.call('decrby', key, delta)
-	// Let's read the Lua script from the repo and update it to support decrementing by delta.
-	// Wait, we can pass the script to Redis EvalSha or Eval.
-	// Let's register script to cache
 	if r.luaSHA == "" {
 		sha, err := r.rdb.ScriptLoad(ctx, deductStockScript).Result()
 		if err != nil {
@@ -245,9 +233,53 @@ func (r *GachaRepository) GetPrizeStock(ctx context.Context, prizeID string) (in
 	}
 
 	// Sync back to Redis if found
-	_ = r.rdb.Set(ctx, prizeStockKey(prizeID), stock, 0).Err()
+	if err := r.rdb.Set(ctx, prizeStockKey(prizeID), stock, 0).Err(); err != nil {
+		logger.Warn("failed to sync back stock to Redis for prize %s: %v", prizeID, err)
+	}
 
 	return stock, nil
+}
+
+func (r *GachaRepository) GetCampaignWithLiveStock(ctx context.Context, id string) (*domain.Campaign, error) {
+	campaign, err := rctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if campaign == nil {
+		return nil, nil
+	}
+
+	pipe := r.rdb.Pipeline()
+	cmds := make(map[string]*redis.StringCmd)
+
+	for _, prize := range campaign.Prizes {
+		if prize.Type == domain.PrizeLimited {
+			cmds[prize.ID] = pipe.Get(ctx, prizeStockKey(prize.ID))
+		}
+	}
+
+	if len(cmds) > 0 {
+		_, _ = pipe.Exec(ctx)
+
+		for i, prize := range campaign.Prizes {
+			if cmd, ok := cmds[prize.ID]; ok {
+				val, err := cmd.Result()
+				if err == nil {
+					if stock, err := strconv.Atoi(val); err == nil {
+						campaign.Prizes[i].RemainedStock = stock
+					}
+				} else {
+					var dbStock int
+					err = r.db.QueryRowContext(ctx, "SELECT remained_stock FROM gacha_prizes WHERE id = ?", prize.ID).Scan(&dbStock)
+					if err == nil {
+						campaign.Prizes[i].RemainedStock = dbStock
+					}
+				}
+			}
+		}
+	}
+
+	return campaign, nil
 }
 
 // Private helper to fetch Campaign and its Prizes from DB
@@ -290,6 +322,12 @@ func (r *GachaRepository) getCampaignFromDB(ctx context.Context, campaignID stri
 func (r *GachaRepository) cacheCampaign(ctx context.Context, campaign *domain.Campaign) {
 	data, err := json.Marshal(campaign)
 	if err == nil {
-		_ = r.rdb.Set(ctx, campaignCacheKey(campaign.ID), string(data), 24*time.Hour).Err()
+		if err := r.rdb.Set(ctx, campaignCacheKey(campaign.ID), string(data), 30*24*time.Hour).Err(); err != nil {
+			logger.Warn("failed to cache campaign config for campaign %s: %v", campaign.ID, err)
+		}
 	}
+}
+
+func (r *GachaRepository) RollbackStock(ctx context.Context, campaignID, prizeID string, delta int) error {
+	return r.rdb.IncrBy(ctx, prizeStockKey(prizeID), int64(delta)).Err()
 }
