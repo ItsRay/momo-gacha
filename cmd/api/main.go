@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"momo-gacha/config"
 	"momo-gacha/internal/handler"
@@ -36,6 +37,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Configure MySQL connection pool (防爆連線上限、提升複用率)
+	db.SetMaxOpenConns(100)              // 限制最大連線數，防止高併發打爆 MySQL max_connections
+	db.SetMaxIdleConns(50)               // 保持空閒連線，免除連線建立的 TCP 握手損耗
+	db.SetConnMaxLifetime(1 * time.Hour) // 設定連線生命週期，避免連線洩漏
+
 	if err := db.Ping(); err != nil {
 		logger.Error("Failed to ping MySQL: %v", err)
 		os.Exit(1)
@@ -44,9 +50,11 @@ func main() {
 
 	// 3. Connect to Redis Client
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Addr,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
+		Addr:         cfg.Redis.Addr,
+		Password:     cfg.Redis.Password,
+		DB:           cfg.Redis.DB,
+		PoolSize:     500,               // 增大連線池以承載高頻抽獎請求
+		MinIdleConns: 50,                // 保持最小空閒連線，防止冷啟動延遲
 	})
 	defer rdb.Close()
 

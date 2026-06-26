@@ -42,26 +42,26 @@
 
 ## 4. 統一高可用架構與容錯策略 (HA & Fault Tolerance)
 
-為極大化 API 吞吐量並確保架構職責單一，系統全面採用事件驅動架構，以最終一致性 (Eventual Consistency) 作為設計基準。
-
 ### 4.1 資料狀態分離與快取重建 (Cache Hydration)
 
-* **活動基礎設定 (機率與規則)**：以 MySQL 為 Source of Truth。若 Redis Cache Miss，實作 `golang.org/x/sync/singleflight`，確保萬人併發下僅單一 Goroutine 查詢資料庫，防禦快取擊穿。
-* **高頻異動狀態 (剩餘庫存)**：以 Redis 為 Source of Truth。基礎設施採用 **Master-Replica (主從架構)**。Master 節點關閉 AOF 全力處理高併發；Replica 節點開啟 AOF (`everysec`) 進行非同步磁碟備份。
+* **活動設定 (機率與規則)**：以 MySQL 為 Source of Truth。若 Cache Miss，使用 `singleflight` 查詢 DB 並重建，防止快取擊穿。
+* **剩餘庫存 (高頻狀態)**：以 Redis 為 Source of Truth。若 Redis 庫存 Key 失效，攔截 Lua 返回的 `-1` 狀態，利用 `singleflight` 自 MySQL 讀取並 `SET` 重建，避免無故降級。
 
 ### 4.2 Kafka 消費與 MySQL 落庫管線 (Consume & Write Pipeline)
 
-為兼顧高吞吐量與資料強一致性，`Reach Worker` 實作以下管線與防誤殺機制：
+1. **雙條件批次拉取 (Batching)**：達標 `BatchSize = 500` 或 `Timeout = 200ms` 即批次處理，依 `prize_id` 在記憶體彙總，合併 SQL 扣減。
+2. **批次交易執行 (Batch Transaction)**：使用 DB Transaction 執行 `Bulk Insert logs` 與彙總扣減。成功後 Commit 並 ACK Kafka。
+3. **異常降級與精準隔離 (Batch-to-Single Fallback)**：當彙總扣減失敗，Rollback 並退化為**單筆 Transaction 執行**。成功者 Commit，異常者（如超賣）隔離至 **DLQ**，確保正常訊息不被連坐。
+4. **優雅關閉 (Graceful Shutdown)**：收到關機訊號先 Close Kafka Consumer 停止拉取，等記憶體緩衝區批次完全落庫 Commit 後，最後才 Close DB。
 
-1. **雙條件批次拉取 (Batching)**：Worker 設定閥值為 `BatchSize = 500` 或 `Timeout = 200ms`。達標後於記憶體中依 `prize_id` 進行彙總（例如將 80 個相同的扣減合併為單句 SQL 樂觀鎖更新）。
-2. **批次交易執行 (Batch Transaction)**：開啟 DB Transaction，執行 `Bulk Insert logs` 與彙總後的樂觀鎖扣減。若成功則 Commit 並向 Kafka 提交 Offset (ACK)。
-3. **異常降級與精準隔離 (Batch-to-Single Fallback)**：當「彙總扣減量大於剩餘庫存（大獎售罄邊界）」時，批次交易 Rollback。Worker 將該批次降級為 **單筆循序執行 (Sequential Process)**。正常訊息順利 Commit；導致超賣的異常訊息則被精準隔離並轉發至 **DLQ (Dead Letter Queue)**，確保合法訊息絕不被連坐誤殺。
+### 4.3 業務補償與斷路器防護 (Fallback & Fail-Fast)
 
-### 4.3 業務補償機制與斷路器防護 (Business Fallback & Fail-Fast)
-
-* **觸發業務降級 (Business Fallback)**：針對進入 DLQ 的超賣訂單（如 Redis 硬體災難遺失資料導致的溢出），系統將自動觸發營運降級流程（派發等值點數並發送致歉通知），以商業手段換取主流程效能。
-* **防重複抽獎**：API 要求 Header 帶入 `Idempotency-Key`。透過 Redis `SETNX` 攔截網路重試或惡意連點，防止重複扣除代幣。
-* **快速失敗**：若 Redis 叢集癱瘓，API 優先觸發 Circuit Breaker 直接回傳 `HTTP 503`。提早中斷請求，不再執行後續冪等檢查與抽獎，絕對保護用戶資產。
+* **業務補償**：DLQ 異常訂單（如超賣）觸發自動補償（如派發等值點數與致歉）。
+* **防重抽獎與 RTT 優化**：
+  * 使用 `Idempotency-Key`，改為**直接 `SETNX` 搶鎖**。
+  * **成功 (99.9% 正常流量)**：直接抽獎與 Lua 扣庫存，Redis RTT 減少 50%。
+  * **失敗 (連點/重試)**：`GET` 查詢鎖狀態，`processing` 則回傳 HTTP 409；已完成則直接返回快取的中獎結果。
+* **快速失敗 (Fail-Fast)**：Redis 癱瘓時觸發熔斷 (Circuit Breaker) 直接回傳 HTTP 503，保護底層。
 
 ## 5. 資料模型與基礎設施設計 (Data Model)
 
@@ -151,7 +151,6 @@ momo-gacha/
 
 ## 8. 未來展望與工程規劃 (Future Roadmap)
 
-* **持久層框架升級 (GORM)**：
-  - **好處**：加速 Admin CRUD 開發；利用 `Preload` 簡化 Campaign 與 Prizes 的關聯寫入；API 預設參數化防止 SQL 注入。
-  - **混合模式**：未來可採「Admin CRUD 使用 GORM」以求高生產力，而「高併發核心與 Worker 批次落庫」維持原生 SQL 以確保極致效能。
-* **可觀測性建置 (Observability)**：導入 OpenTelemetry 鏈路追蹤，並使用 Prometheus / Grafana 監控 Redis 庫存與 Kafka Consumer Lag。
+* **Transactional Outbox Pattern**：解決 Redis 扣減成功但 Kafka 發送失敗（如 API 當機）導致的雙端庫存不一致。規劃未來以同一個 DB 事務將中獎紀錄與事件寫入 `outbox` 表，再由獨立 Relay 確保 Kafka 事件 At-Least-Once 投遞。
+* **持久層框架升級 (GORM)**：採用混合模式。Admin CRUD 引入 GORM 提升開發效率；高併發核心抽獎與 Worker 批次落庫維持原生 SQL 以求極致性能。
+* **可觀測性建置 (Observability)**：導入 OpenTelemetry 進行鏈路追蹤，並使用 Prometheus / Grafana 監控 Redis 庫存與 Kafka Consumer Lag。

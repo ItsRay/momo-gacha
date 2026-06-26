@@ -106,3 +106,39 @@ func (r *rewardRepository) DeductPrizeStock(ctx context.Context, prizeID string,
 
 	return nil
 }
+
+func (r *rewardRepository) ExecuteSingleTransaction(ctx context.Context, record domain.RewardRecord) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. Deduct prize stock in DB
+	res, err := tx.ExecContext(ctx,
+		"UPDATE gacha_prizes SET remained_stock = remained_stock - 1, updated_at = NOW() WHERE id = ? AND remained_stock >= 1",
+		record.PrizeID,
+	)
+	if err != nil {
+		return fmt.Errorf("deduct prize stock failed: %w", err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("insufficient stock for prize %s", record.PrizeID)
+	}
+
+	// 2. Insert reward record
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO gacha_reward_records (id, gacha_campaign_id, user_id, prize_id, created_at) VALUES (?, ?, ?, ?, ?)",
+		record.ID, record.CampaignID, record.UserID, record.PrizeID, record.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert reward record failed: %w", err)
+	}
+
+	return tx.Commit()
+}

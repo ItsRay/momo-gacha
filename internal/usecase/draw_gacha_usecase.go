@@ -41,24 +41,28 @@ func (u *drawGachaUsecase) Draw(ctx context.Context, campaignID string, userID s
 	// - idempotencyRedisKey: 格式化後、實際做為 Redis 操作使用的 Key
 	idempotencyRedisKey := buildIdempotencyRedisKey(idempotencyKey)
 	if idempotencyKey != "" {
-		val, err := u.rdb.Get(ctx, idempotencyRedisKey).Result()
-		if err == nil {
-			if val == statusProcessing {
-				return nil, domain.NewConflictError("request is being processed, please try again later")
-			}
-			// If it's a cached prize result, return it immediately
-			var cachedPrize domain.Prize
-			if err := json.Unmarshal([]byte(val), &cachedPrize); err == nil {
-				return &cachedPrize, nil
-			}
-		}
-
-		// Try to acquire lock
+		// Directly try to acquire the idempotency lock
 		acquired, err := u.rdb.SetNX(ctx, idempotencyRedisKey, statusProcessing, 1*time.Minute).Result()
 		if err != nil {
 			return nil, fmt.Errorf("idempotency check failed: %w", err)
 		}
 		if !acquired {
+			// If lock acquisition fails, retrieve the lock's value
+			val, err := u.rdb.Get(ctx, idempotencyRedisKey).Result()
+			if err != nil {
+				return nil, fmt.Errorf("failed to retrieve idempotency key status: %w", err)
+			}
+
+			if val == statusProcessing {
+				return nil, domain.NewConflictError("request is being processed, please try again later")
+			}
+
+			// If it's a cached prize result, return it immediately
+			var cachedPrize domain.Prize
+			if err := json.Unmarshal([]byte(val), &cachedPrize); err == nil {
+				return &cachedPrize, nil
+			}
+
 			return nil, domain.NewConflictError("duplicate request")
 		}
 	}
@@ -105,9 +109,10 @@ func (u *drawGachaUsecase) Draw(ctx context.Context, campaignID string, userID s
 			return nil, fmt.Errorf("failed to deduct stock: %w", err)
 		}
 
-		if res == domain.DeductStockSuccess {
+		switch res {
+		case domain.DeductStockSuccess:
 			deductSuccess = true
-		} else if res == domain.DeductStockOutOfStock || res == domain.DeductStockNotFound {
+		case domain.DeductStockOutOfStock, domain.DeductStockNotFound:
 			// Trigger Graceful Fallback!
 			fallbackPrize, err := u.findFallbackPrize(campaign)
 			if err != nil {

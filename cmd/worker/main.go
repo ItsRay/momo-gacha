@@ -111,19 +111,7 @@ func (w *Worker) handleBatch(ctx context.Context, events []domain.RewardEvent) e
 }
 
 func (w *Worker) processSingleRecord(ctx context.Context, rec domain.RewardRecord) error {
-	// Deduct stock first
-	err := w.rewardRepo.DeductPrizeStock(ctx, rec.PrizeID, 1)
-	if err != nil {
-		return err
-	}
-
-	// Insert reward record
-	err = w.rewardRepo.InsertRewardRecord(ctx, &rec)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return w.rewardRepo.ExecuteSingleTransaction(ctx, rec)
 }
 
 func (w *Worker) triggerReachSimulation(ev domain.RewardEvent) {
@@ -186,6 +174,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Configure MySQL connection pool (防爆連線上限、提升複用率)
+	db.SetMaxOpenConns(100)              // 限制最大連線數，防止高併發打爆 MySQL max_connections
+	db.SetMaxIdleConns(50)               // 保持空閒連線，免除連線建立的 TCP 握手損耗
+	db.SetConnMaxLifetime(1 * time.Hour) // 設定連線生命週期，避免連線洩漏
+
 	if err := db.Ping(); err != nil {
 		logger.Error("Failed to ping MySQL: %v", err)
 		os.Exit(1)
@@ -207,13 +200,30 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	workerDone := make(chan struct{})
+
 	go func() {
-		<-sigChan
-		logger.Info("Shutdown signal received. Shutting down worker...")
-		cancel()
+		// 6. Start Worker Loop in goroutine
+		worker.Start(ctx)
+		close(workerDone)
 	}()
 
-	// 6. Start Worker Loop
-	worker.Start(ctx)
-	logger.Info("Worker stopped gracefully.")
+	// Block until signal is received
+	<-sigChan
+	logger.Info("Shutdown signal received. Shutting down worker...")
+
+	// 1. Close worker (e.g. stop Kafka consumer reading new messages)
+	if err := worker.Close(); err != nil {
+		logger.Error("Failed to close worker: %v", err)
+	}
+
+	// 2. Wait for worker to finish processing the current batch (with 10s timeout)
+	select {
+	case <-workerDone:
+		logger.Info("Worker stopped gracefully.")
+	case <-time.After(10 * time.Second):
+		logger.Warn("Graceful shutdown timeout exceeded. Forcing cancellation...")
+		cancel() // Force cancel the context to unblock remaining DB/MQ processes
+		<-workerDone
+	}
 }

@@ -105,6 +105,9 @@ type RewardRepository interface {
 
 	// DeductPrizeStock deducts the stock of a single prize in persistent storage.
 	DeductPrizeStock(ctx context.Context, prizeID string, deductCount int) error
+
+	// ExecuteSingleTransaction performs single persistence of reward record and stock deduction in a transaction.
+	ExecuteSingleTransaction(ctx context.Context, record RewardRecord) error
 }
 
 // ValidationError represents client input validation errors (mapped to HTTP 400).

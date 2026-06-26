@@ -17,13 +17,12 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-var deductStockScript = lua.DeductStockScript
+var deductStockScript = redis.NewScript(lua.DeductStockScript)
 
 type GachaRepository struct {
 	db       *sql.DB
 	rdb      *redis.Client
 	sfGroup  *singleflight.Group
-	luaSHA   string
 }
 
 // NewGachaRepository creates a new GachaRepository instance.
@@ -77,12 +76,18 @@ func (r *GachaRepository) CreateCampaign(ctx context.Context, campaign *domain.C
 		return err
 	}
 
-	// 3. Initialize Redis stock for limited prizes (Soft failure: log but do not fail the request)
+	// 3. Initialize Redis stock for limited prizes using Pipeline (使用 Pipeline 批次發送命令，將多次網路 RTT 壓縮成 1 次以提升效能，軟失敗不影響 API)
+	pipe := r.rdb.Pipeline()
+	var hasLimited bool
 	for _, prize := range campaign.Prizes {
 		if prize.Type == domain.PrizeLimited {
-			if serr := r.rdb.Set(ctx, prizeStockKey(prize.ID), prize.InitStock, 0).Err(); serr != nil {
-				logger.Warn("Redis stock init failed for prize %s: %v. Relying on cache hydration.", prize.ID, serr)
-			}
+			pipe.Set(ctx, prizeStockKey(prize.ID), prize.InitStock, 0)
+			hasLimited = true
+		}
+	}
+	if hasLimited {
+		if _, serr := pipe.Exec(ctx); serr != nil {
+			logger.Warn("Redis stock init using pipeline failed: %v. Relying on cache hydration.", serr)
 		}
 	}
 
@@ -190,30 +195,50 @@ func (r *GachaRepository) UpdatePrizeWeights(ctx context.Context, campaignID str
 }
 
 func (r *GachaRepository) DeductStock(ctx context.Context, campaignID, prizeID string, delta int) (int64, error) {
-	// Run Lua script to decrement stock atomically
-	if r.luaSHA == "" {
-		sha, err := r.rdb.ScriptLoad(ctx, deductStockScript).Result()
+	// Helper to execute the script deduction
+	execDeduct := func() (int64, error) {
+		res, err := deductStockScript.Run(ctx, r.rdb, []string{prizeStockKey(prizeID)}, delta).Result()
 		if err != nil {
-			// Fallback to direct eval if script load fails
-			return r.evalDirect(ctx, prizeStockKey(prizeID), delta)
+			return 0, err
 		}
-		r.luaSHA = sha
+		return res.(int64), nil
 	}
 
-	res, err := r.rdb.EvalSha(ctx, r.luaSHA, []string{prizeStockKey(prizeID)}, delta).Result()
+	res, err := execDeduct()
 	if err != nil {
 		return 0, err
 	}
 
-	return res.(int64), nil
-}
+	// If the stock key does not exist in Redis, trigger cache hydration from DB
+	if res == domain.DeductStockNotFound {
+		logger.Warn("Redis stock cache not found for prize %s. Triggering singleflight hydration...", prizeID)
+		
+		_, err, _ = r.sfGroup.Do("hydrate_stock_"+prizeID, func() (interface{}, error) {
+			var dbStock int
+			err = r.db.QueryRowContext(ctx, "SELECT remained_stock FROM gacha_prizes WHERE id = ?", prizeID).Scan(&dbStock)
+			if err != nil {
+				return nil, err
+			}
 
-func (r *GachaRepository) evalDirect(ctx context.Context, key string, delta int) (int64, error) {
-	res, err := r.rdb.Eval(ctx, deductStockScript, []string{key}, delta).Result()
-	if err != nil {
-		return 0, err
+			// Synchronize stock back to Redis
+			if err := r.rdb.Set(ctx, prizeStockKey(prizeID), dbStock, 0).Err(); err != nil {
+				return nil, err
+			}
+			logger.Info("Successfully hydrated stock cache in Redis for prize %s (stock: %d)", prizeID, dbStock)
+			return dbStock, nil
+		})
+		if err != nil {
+			return 0, fmt.Errorf("failed to hydrate stock cache for prize %s: %w", prizeID, err)
+		}
+
+		// Retry deduction after hydration
+		res, err = execDeduct()
+		if err != nil {
+			return 0, err
+		}
 	}
-	return res.(int64), nil
+
+	return res, nil
 }
 
 func (r *GachaRepository) GetPrizeStock(ctx context.Context, prizeID string) (int, error) {
