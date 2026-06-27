@@ -33,5 +33,5 @@ config/*.local.json
 .env
 .env.local
 
-# Benchmark reports
-benchmark_report.txt
+# E2E Test reports
+e2e_test_report.txt

@@ -42,8 +42,17 @@ func main() {
 	db.SetMaxIdleConns(50)               // 保持空閒連線，免除連線建立的 TCP 握手損耗
 	db.SetConnMaxLifetime(1 * time.Hour) // 設定連線生命週期，避免連線洩漏
 
-	if err := db.Ping(); err != nil {
-		logger.Error("Failed to ping MySQL: %v", err)
+	var dbErr error
+	for i := 0; i < 10; i++ {
+		dbErr = db.Ping()
+		if dbErr == nil {
+			break
+		}
+		logger.Warn("Failed to ping MySQL, retrying in 1 second... (%d/10)", i+1)
+		time.Sleep(1 * time.Second)
+	}
+	if dbErr != nil {
+		logger.Error("Failed to ping MySQL after 10 attempts: %v", dbErr)
 		os.Exit(1)
 	}
 	logger.Info("Connected to MySQL database successfully.")

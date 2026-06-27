@@ -18,9 +18,10 @@ type kafkaPublisher struct {
 func NewKafkaPublisher(brokers []string, topic string) domain.MessagePublisher {
 	return &kafkaPublisher{
 		writer: &kafka.Writer{
-			Addr:     kafka.TCP(brokers...),
-			Topic:    topic,
-			Balancer: &kafka.LeastBytes{},
+			Addr:                   kafka.TCP(brokers...),
+			Topic:                  topic,
+			Balancer:               &kafka.LeastBytes{},
+			AllowAutoTopicCreation: true, // 允許自動建立主題 (for test)
 		},
 	}
 }
@@ -32,6 +33,7 @@ func (p *kafkaPublisher) PublishReward(ctx context.Context, event *domain.Reward
 	}
 
 	var lastErr error
+	backoffs := []time.Duration{100 * time.Millisecond, 300 * time.Millisecond}
 	for attempt := 1; attempt <= 3; attempt++ {
 		lastErr = p.writer.WriteMessages(ctx, kafka.Message{
 			Key:   []byte(event.UserID),
@@ -42,7 +44,7 @@ func (p *kafkaPublisher) PublishReward(ctx context.Context, event *domain.Reward
 		}
 		logger.Warn("Failed to publish reward event to MQ (attempt %d/3): %v", attempt, lastErr)
 		if attempt < 3 {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(backoffs[attempt-1])
 		}
 	}
 

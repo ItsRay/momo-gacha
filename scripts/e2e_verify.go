@@ -36,7 +36,7 @@ type APIResponse struct {
 
 func main() {
 	fmt.Println("==================================================")
-	fmt.Println("🚀 momo-gacha 端到端併發壓力與自癒驗證工具")
+	fmt.Println("🚀 momo-gacha 端到端併發壓力與自癒驗證工具 (E2E Test)")
 	fmt.Println("==================================================")
 
 	baseURL := os.Getenv("API_URL")
@@ -98,6 +98,10 @@ func main() {
 	var duplicatesBlocked int64
 	var errs int64
 
+	// Performance Tracking
+	var totalLatencyNs int64
+	startTime := time.Now()
+
 	// Concurrency workers limit
 	concurrencyLimit := 10
 	sem := make(chan struct{}, concurrencyLimit)
@@ -113,7 +117,10 @@ func main() {
 			req.Header.Set("X-User-Id", fmt.Sprintf("user_%d", userID))
 			req.Header.Set("Idempotency-Key", fmt.Sprintf("idem_%s_%d", campaignID, userID))
 
+			reqStart := time.Now()
 			resp, err := client.Do(req)
+			atomic.AddInt64(&totalLatencyNs, int64(time.Since(reqStart)))
+
 			if err != nil {
 				atomic.AddInt64(&errs, 1)
 				fmt.Printf("❌ [Client] 用戶 user_%-3d 抽獎 -> 網路錯誤: %v\n", userID, err)
@@ -170,6 +177,9 @@ func main() {
 	}
 
 	wg.Wait()
+	totalDuration := time.Since(startTime)
+	avgLatency := time.Duration(atomic.LoadInt64(&totalLatencyNs) / int64(totalDraws))
+	qps := float64(totalDraws) / totalDuration.Seconds()
 
 	fmt.Println("--------------------------------------------------")
 	fmt.Println("✅ [Client] 併發抽獎模擬結束！")
@@ -183,6 +193,11 @@ func main() {
 	fmt.Println("+----------------------+----------+--------------+----------+")
 	fmt.Printf("* 冪等防連點連點阻擋:   %d 次 (故意模擬 user_0 重複快速連點 10 次，成功攔截了後續 9 次重複請求)\n", atomic.LoadInt64(&duplicatesBlocked))
 	fmt.Printf("* 網路與請求異常次數:   %d 次 (記錄因 TCP 連線超時或網路抖動造成的 HTTP 異常)\n", atomic.LoadInt64(&errs))
+	fmt.Println("--------------------------------------------------")
+	fmt.Println("📈 性能指標統計 (Performance Metrics)：")
+	fmt.Printf("* 總執行時間 (Total Time):     %v\n", totalDuration.Round(10*time.Millisecond))
+	fmt.Printf("* 平均請求延遲 (Avg Latency):   %v (API 往返單筆平均時間)\n", avgLatency.Round(10*time.Microsecond))
+	fmt.Printf("* 吞吐量 (Throughput QPS):    %.2f req/sec (併發限制限制為: %d)\n", qps, concurrencyLimit)
 	fmt.Println("--------------------------------------------------")
 
 	// 3. [Admin] Get remaining stocks
@@ -224,10 +239,10 @@ func main() {
 	fmt.Println("==================================================")
 
 	// 4. Generate local report
-	reportPath := "benchmark_report.txt"
+	reportPath := "e2e_test_report.txt"
 	var buf bytes.Buffer
 	buf.WriteString("==================================================\n")
-	buf.WriteString("🚀 momo-gacha 壓力測試與驗收報告 (中文版)\n")
+	buf.WriteString("🚀 momo-gacha 端到端併發與整合測試報告 (中文版)\n")
 	buf.WriteString("==================================================\n")
 	buf.WriteString(fmt.Sprintf("報告生成時間: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	buf.WriteString(fmt.Sprintf("活動 ID:      %s\n", campaignID))
@@ -250,6 +265,11 @@ func main() {
 	buf.WriteString(fmt.Sprintf("  - 銘謝惠顧 抽中:       %d 個\n", atomic.LoadInt64(&fallbackWon)))
 	buf.WriteString(fmt.Sprintf("  - 冪等防連點連點阻擋:   %d 次 (防重複抽獎)\n", atomic.LoadInt64(&duplicatesBlocked)))
 	buf.WriteString(fmt.Sprintf("  - 網路與請求異常次數:   %d 次\n", atomic.LoadInt64(&errs)))
+	buf.WriteString("--------------------------------------------------\n")
+	buf.WriteString("📈 性能指標統計 (Performance Metrics):\n")
+	buf.WriteString(fmt.Sprintf("  - 總執行時間 (Total Time):     %v\n", totalDuration.Round(10*time.Millisecond)))
+	buf.WriteString(fmt.Sprintf("  - 平均請求延遲 (Avg Latency):   %v\n", avgLatency.Round(10*time.Microsecond)))
+	buf.WriteString(fmt.Sprintf("  - 吞吐量 (Throughput QPS):    %.2f req/sec (併發限制限制為: %d)\n", qps, concurrencyLimit))
 	buf.WriteString("--------------------------------------------------\n")
 	buf.WriteString("最終實時庫存狀態 (MySQL / Redis 資料一致性驗證):\n")
 	if len(finalCampaign.Prizes) > 0 {

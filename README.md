@@ -8,7 +8,7 @@
 
 ---
 
-## 🚀 快速啟動與基準測試 (Quick Start & Benchmark)
+## 🚀 快速啟動與整合測試 (Quick Start & E2E Test)
 
 ### 🛠️ 環境要求 (Prerequisites)
 
@@ -22,8 +22,8 @@
 # 1. 一鍵啟動所有 Docker 容器（API Server, Worker, Redis, MySQL, Kafka）
 make compose-up
 
-# 2. 運行高併發整合驗證腳本（模擬 200 位用戶搶抽大獎、連點阻擋與非同步落庫驗收）
-make benchmark
+# 2. 運行高併發 E2E 整合驗證腳本（模擬 200 位用戶搶抽大獎、連點阻擋與性能數據統計）
+make e2e-test
 
 # 3. 測試完畢後，一鍵清理容器與暫存資料
 make compose-down
@@ -40,13 +40,13 @@ make compose-down
 #### 1. 啟動所有容器服務 (`make compose-up`)
 這將自動拉起所有容器服務。MySQL 啟動時會透過 `scripts/schema.sql` 自動初始化資料庫表結構。API 伺服器會監聽在本地 `http://localhost:8080`。
 
-#### 2. 執行 E2E 併發與自癒基準驗證 (`make benchmark`)
+#### 2. 執行 E2E 併發與自癒壓力驗證 (`make e2e-test`)
 此指令會自動在 Docker 內部拉起一個一次性的 Golang 容器，直接透過容器內網（`http://api:8080`）對 API 服務進行高併發抽獎與功能驗證：
 1. **活動初始化**：自動呼叫 Admin API 建立一個新抽獎活動，限量大獎庫存為 5、二獎限量庫存為 20、以及保底獎（銘謝惠顧）。
 2. **高併發搶抽**：模擬 200 個併發請求搶抽該限量大獎，驗證高併發下庫存是否會超賣，以及大獎售罄後是否自動降級為保底獎項。
 3. **冪等性防連點**：同時發送重複的 `Idempotency-Key` 請求，驗證功能是否精準防範重複扣減與連點。
 4. **非同步批量落庫驗收**：最後讀取 Admin 統計數據，確認資料庫是否經由 Background Worker 批次非同步安全落庫且資料最終一致。
-5. **產生報告**：測試結束後會自動在專案根目錄產生測試報告檔 `benchmark_report.txt` 可供查閱。
+5. **產生報告與效能統計**：測試結束後會自動在專案根目錄產生測試報告檔 `e2e_test_report.txt`，內容包含吞吐量 (QPS)、平均響應延遲與總耗時，可供查閱。
 
 #### 3. 清理容器與暫存資料 (`make compose-down`)
 停止所有運行的容器，並清理暫存的資料庫與快取資料。
@@ -99,7 +99,7 @@ momo-gacha/
 │   └── config.yaml               # 本地/環境預設配置
 ├── scripts/                      # 腳本目錄
 │   ├── schema.sql                # MySQL 表結構定義檔案
-│   └── benchmark.go              # 端到端高併發壓力模擬腳本
+│   └── e2e_verify.go             # 端到端整合測試與性能指標腳本
 ├── Dockerfile.api                # API Server 的 Dockerfile
 ├── Dockerfile.worker             # Background Worker 的 Dockerfile
 ├── docker-compose.yml            # 基礎設施與服務一鍵 Docker-Compose 部署配置

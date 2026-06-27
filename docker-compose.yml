@@ -56,6 +56,23 @@ services:
       timeout: 3s
       retries: 10
 
+  init-kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: momo-gacha-init-kafka
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: >
+      bash -c "
+      echo 'Waiting for Kafka to be ready...'
+      cub kafka-ready -b kafka:29092 1 20
+      echo 'Creating Kafka topics...'
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic gacha-rewards --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic gacha-rewards-dlq --partitions 1 --replication-factor 1
+      echo 'Topics created successfully.'
+      "
+
   api:
     build:
       context: .
@@ -68,8 +85,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
     environment:
       - DATABASE_DSN=root:rootpass@tcp(mysql:3306)/momo_gacha?parseTime=true&loc=Local
       - REDIS_ADDR=redis:6379
@@ -85,19 +102,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
     environment:
       - DATABASE_DSN=root:rootpass@tcp(mysql:3306)/momo_gacha?parseTime=true&loc=Local
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
 
-  benchmark:
+  e2e-test:
     image: golang:1.26.4-alpine
-    container_name: momo-gacha-benchmark
+    container_name: momo-gacha-e2e-test
     volumes:
       - .:/app
     working_dir: /app
     environment:
       - API_URL=http://api:8080
-    command: go run scripts/benchmark.go
+    command: go run scripts/e2e_verify.go
