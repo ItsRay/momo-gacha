@@ -10,7 +10,12 @@
 
 ## 🚀 快速啟動與基準測試 (Quick Start & Benchmark)
 
-本專案的所有服務與基礎設施（API Server, Worker, Redis, MySQL, Kafka）已完全 Docker 化，並配有 **`Makefile`**。**本機無需安裝 Go 環境，即可直接複製下方指令完成啟動與 E2E 驗證**。
+### 🛠️ 環境要求 (Prerequisites)
+
+在運行本專案前，請確認您的本機環境已安裝以下工具：
+* **Docker** 與 **Docker Compose** (必須。本專案的所有服務與基礎設施，包含 Kafka, Redis, MySQL 等，已完全 Docker 化)。
+* **Go 1.22+** (可選。僅在本地手動執行單元測試 `make test` 時需要，若僅運行 E2E 壓力測試則無須安裝 Go)。
+* **Make** 工具 (推薦。以便快速運行快捷指令)。
 
 ### ⚡ 3秒極速複製貼上測試 (TL;DR)
 ```bash
@@ -23,6 +28,8 @@ make benchmark
 # 3. 測試完畢後，一鍵清理容器與暫存資料
 make compose-down
 ```
+> **提示**：由於測試腳本使用動態 Campaign ID，舊資料不會干擾測試。若您希望清除舊容器與資料庫殘留，可先執行 `make compose-down` 清理資料卷。
+
 > [!TIP]
 > 您亦可直接於專案根目錄輸入 `make` 或 `make help` 檢視所有可用指令說明。
 

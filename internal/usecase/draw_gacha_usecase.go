@@ -2,10 +2,9 @@ package usecase
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/big"
+	"math/rand/v2"
 	"time"
 
 	"momo-gacha/internal/domain"
@@ -184,12 +183,8 @@ func (u *drawGachaUsecase) selectPrizeLayer1(campaign *domain.Campaign) (*domain
 		return nil, domain.NewValidationError("invalid campaign configuration: no fallback prize found")
 	}
 
-	// 在機率基數 [0, MaxBasisPoints) 區間內產生安全隨機數 r
-	nBig, err := rand.Int(rand.Reader, big.NewInt(domain.MaxBasisPoints))
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate random number: %w", err)
-	}
-	r := int(nBig.Int64())
+	// 使用 Go 1.22+ math/rand/v2 高性能偽隨機數產生器
+	r := rand.IntN(domain.MaxBasisPoints)
 
 	// 1. 若隨機數小於限量獎品權重總和，代表命中限量獎品區間，進一步遍歷找出命中哪一項
 	if r < otherWeightsSum {

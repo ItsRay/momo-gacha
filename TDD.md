@@ -50,7 +50,7 @@
 ### 4.2 Kafka 消費與 MySQL 落庫管線 (Consume & Write Pipeline)
 
 1. **雙條件批次拉取 (Batching)**：達標 `BatchSize = 500` 或 `Timeout = 200ms` 即批次處理，依 `prize_id` 在記憶體彙總，合併 SQL 扣減。
-2. **批次交易執行 (Batch Transaction)**：使用 DB Transaction 執行 `Bulk Insert logs` 與彙總扣減。成功後 Commit 並 ACK Kafka。
+2. **批次交易執行 (Batch Transaction)**：使用 DB Transaction 執行 `Bulk Insert records` 與彙總扣減。成功後 Commit 並 ACK Kafka。
 3. **異常降級與精準隔離 (Batch-to-Single Fallback)**：當彙總扣減失敗，Rollback 並退化為**單筆 Transaction 執行**。成功者 Commit，異常者（如超賣）隔離至 **DLQ**，確保正常訊息不被連坐。
 4. **優雅關閉 (Graceful Shutdown)**：收到關機訊號先 Close Kafka Consumer 停止拉取，等記憶體緩衝區批次完全落庫 Commit 後，最後才 Close DB。
 
@@ -62,6 +62,13 @@
   * **成功 (99.9% 正常流量)**：直接抽獎與 Lua 扣庫存，Redis RTT 減少 50%。
   * **失敗 (連點/重試)**：`GET` 查詢鎖狀態，`processing` 則回傳 HTTP 409；已完成則直接返回快取的中獎結果。
 * **快速失敗 (Fail-Fast)**：Redis 癱瘓時觸發熔斷 (Circuit Breaker) 直接回傳 HTTP 503，保護底層。
+
+### 4.4 非同步觸達發送與通知模擬 (Reach Notification Simulation)
+
+為了落實抽獎核心與通知發送的併發解耦，本系統採用非同步事件觸達設計：
+
+* **非同步觸達路由**：API 同步開獎成功後，發送事件至 Kafka。`Reach Worker` 作為 Consumer 訂閱該 Topic，並在資料庫記錄成功提交後，直接調用 `triggerReachSimulation` 執行 App 推播與資產發行模擬（以主控台日誌形式輸出）。
+* **容錯隔離與 DLQ**：若在資料庫寫入或處理過程中發生異常（如資料庫庫存不足或資料衝突），該事件將退化為單筆事務處理，最終仍失敗者會被隔離發送至死信隊列（DLQ）中，以保證整個通知管線高可用且不堵塞。
 
 ## 5. 資料模型與基礎設施設計 (Data Model)
 
@@ -86,7 +93,7 @@
 | `init_stock` | 初始發行總量 |
 | `remained_stock` | 剩餘可抽庫存 (Worker 依此執行 `UPDATE ... WHERE remained_stock >= ?` 樂觀鎖) |
 
-**gacha\_reward\_logs (中獎明細軌跡表)**
+**gacha\_reward\_records (中獎明細軌跡表)**
 | 欄位 | 說明 |
 | :--- | :--- |
 | `id` | PK |
@@ -145,12 +152,13 @@ momo-gacha/
 │   ├── usecase/                  # [核心心臟] 獨立業務情境 (包含雙層引擎邏輯與 Singleflight)
 │   ├── repository/               # Data 層：MySQL/Redis 讀寫與 Lua Script
 │   ├── mq/                       # Event 層：Kafka Producer/Consumer 實作
+│   ├── worker/                   # Worker 層：處理非同步批次落庫與觸達發送模擬
 │   └── domain/                   # Domain 層：跨層共用 Structs
 └── ...
 ```
 
 ## 8. 未來展望與工程規劃 (Future Roadmap)
 
-* **Transactional Outbox Pattern**：解決 Redis 扣減成功但 Kafka 發送失敗（如 API 當機）導致的雙端庫存不一致。規劃未來以同一個 DB 事務將中獎紀錄與事件寫入 `outbox` 表，再由獨立 Relay 確保 Kafka 事件 At-Least-Once 投遞。
+* **Transactional Outbox 與新串 Kafka 觸達流水線**：為了解決 Redis 扣減與 Kafka 發送之間可能發生的不一致，並確保第三方通知服務在瞬間高併發流量下受到流量保護。未來規劃採用 Outbox 模式：API 開獎事件先推送至 `Topic-1`，落庫 Worker 消費並在 DB 事務中同步 Commit 業務明細與 `outbox` 記錄。隨後由獨立 Relay 撈取變更發布至觸達專用 `Topic-2`，最後由通知 Consumer 訂閱 `Topic-2` 進行流量控制發送，確保 MySQL 成功落庫後才派發，並極致保護第三方 API 免於流量過載。
 * **持久層框架升級 (GORM)**：採用混合模式。Admin CRUD 引入 GORM 提升開發效率；高併發核心抽獎與 Worker 批次落庫維持原生 SQL 以求極致性能。
 * **可觀測性建置 (Observability)**：導入 OpenTelemetry 進行鏈路追蹤，並使用 Prometheus / Grafana 監控 Redis 庫存與 Kafka Consumer Lag。

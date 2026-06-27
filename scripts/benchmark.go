@@ -233,7 +233,7 @@ func main() {
 	buf.WriteString(fmt.Sprintf("活動 ID:      %s\n", campaignID))
 	buf.WriteString("活動配置詳情:\n")
 	for _, p := range newCampaign.Prizes {
-		typeStr := "限量大獎"
+		typeStr := "限量大獎" 
 		initStockStr := fmt.Sprintf("%d", p.InitStock)
 		if p.Type == "fallback" {
 			typeStr = "保底獎項"
