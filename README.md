@@ -53,12 +53,20 @@ make compose-down
 
 ---
 
-## 🧪 執行單元測試 (Unit Test)
+## 🧪 執行測試與效能基準 (Testing & Benchmarks)
 
-若您本地已有 Go 環境，可以執行以下命令驗證核心隨機演算法與補償交易機制：
+### 1. 單元測試 (Unit Test)
+驗證核心加權機率分佈演算法、併發防超賣以及 MQ 失敗補償交易等邏輯：
 ```bash
 make test
 ```
+
+### 2. 基準測試 (Benchmark)
+執行 Go 原生 Benchmark，測試單機 CPU 在運算隨機數與核心抽獎邏輯時的極限 TPS：
+```bash
+make bench
+```
+> 關於基準測試的實測效能參考、包含/隔離之效能邊界說明，請參閱 **[TDD.md - SLA 三層驗證路徑](file:///Users/ray/GolandProjects/momo-gacha/TDD.md#22-sla-三層驗證路徑)**。
 
 ---
 

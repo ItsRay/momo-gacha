@@ -15,21 +15,22 @@
 * **事件發布 (非同步)**：API 確定結果後，扮演 Producer 將中獎事件推送至 Kafka。
 * **統一寫入與觸達 (非同步 Consumer)**：`Reach Worker Service` 訂閱該 Topic，統一處理所有耗時 I/O，包含「中獎明細批次落庫 MySQL」與「呼叫下游發送資產/推播」。
 
-## 2. 系統承載量評估 (Capacity Planning)
+## 2. 系統承載量評估 & 可行性評估
 
-為因應大型電商檔期（如 618）的搶抽熱潮，本系統設計不僅滿足 PRD 要求，更提供超額效能冗餘：
+為因應 618 檔期的 10,000 QPS 瞬間寫入流量，本系統進行了以下可行性分析與架構估算：
 
 | 指標 | PRD 要求 | 本架構實作目標 | 滿足說明 |
 | :--- | :--- | :--- | :--- |
 | **峰值 QPS** | 10,000 QPS | 10,000+ QPS | 透過 K8s HPA 水平擴展 API Pods 消化流量 |
 | **回應時間** | 1s - 2s | P99 < 50ms | 僅執行 Redis 原子扣減，實現極速回應 |
-| **可用性** | 99.99% | 99.99% | 透過斷路器 (Circuit Breaker) 與 Master-Replica 確保高可用 |
+| **可用性** | 99.99% | 99.99% | 透過斷路器與 Master-Replica 確保高可用 |
 
-**組件乘載力精算：**
+* **Redis 快取層**：Redis 基於全記憶體操作且採 I/O 多路復用，依據 Redis 官方基準指標與一般生產環境預期承載量，單節點執行此類輕量 Lua 腳本（無複雜循環）預期可承載數萬 QPS，足以應對 10,000 QPS 的瞬間流量。
+* **Kafka 消息佇列**：Kafka 單分區順序寫入吞吐量可達數萬 TPS，API 端推送無效能瓶頸。
+* **MySQL 資料庫層 (壓降 99.8%)**：MySQL 寫入極限為 1k-3k TPS。系統透過 **Kafka 削峰** 與 **Worker 批量落庫**（`BatchSize = 500`），將 10,000 筆寫入合併壓降為：
+  $$\text{資料庫每秒交易數 (TPS)} = \frac{10,000}{500} = 20 \text{ TPS}$$
+  以每秒僅 20 次批次交易執行 Bulk Write，徹底消除 DB 崩潰風險。
 
-* **Gacha API**: 透過 HPA 佈署 5 個 Pods，單一 Pod 負載僅約 2,000 QPS，遠低於單機瓶頸。
-* **Redis**: 採用 Lua Script 在記憶體內完成所有計算，維持微秒級延遲。
-* **MySQL**: 透過 Worker 批次處理，將寫入負載從 10,000 TPS 壓降至 **約 20 TPS**，徹底根除 DB 崩潰風險。
 
 ## 3. 核心技術方案：雙層抽獎引擎 (Core Engine)
 
@@ -74,7 +75,7 @@
 
 ### 5.1 MySQL 關聯式模型 (Source of Truth)
 
-採用 MySQL 作為底層儲存，依賴其 ACID 特性與行級鎖 (Row-Level Lock)，作為財務對帳與庫存樂觀鎖的最終防線：
+採用 MySQL 為底層儲存，依賴其 ACID 特性與行級鎖 (Row-Level Lock)，作為財務對帳與庫存樂觀鎖的最終防線：
 
 **gacha\_campaigns (活動主表)**
 | 欄位 | 說明 |
@@ -157,8 +158,27 @@ momo-gacha/
 └── ...
 ```
 
-## 8. 未來展望與工程規劃 (Future Roadmap)
+## 8. SLA 驗證與測試策略 (SLA Validation & Testing)
+
+本專案透過三層防線互補驗證上述設計的可行性：
+
+### 8.1 微基準測試 (Micro-Benchmark)
+排除網路與磁碟 I/O，驗證 Go 應用層核心邏輯效能（可於本機執行 `make bench`）：
+* 隨機演算法 (`selectPrizeLayer1`): **13 ns/op** (單核 $\approx 7,000\text{萬 QPS}$)
+* 抽獎 Usecase 核心流控 (`Draw`): **423 ns/op** (單核 $\approx 230\text{萬 QPS}$)
+* *註：此測試隔離了外部 I/O。網路延遲 (RTT) 與磁碟 I/O 實務上已透過 Lua 腳本減量（多個操作併為 1 次 RTT）以及 Kafka 異步削峰與批次落庫平滑處理。*
+
+### 8.2 端到端整合測試 (E2E Test)
+本地 Docker-compose 因共享單機 CPU/IO 資源，腳本設定 `concurrencyLimit=10` 以防磁碟競爭超時。旨在模擬高併發以驗證「冪等防連點、零超賣降級、落庫最終一致性」等業務邏輯正確性。
+
+### 8.3 生產環境壓力測試規劃 (Production Load Test)
+* **分散式壓測**：規劃使用常見壓測工具（如 k6 / Locust）部署於叢集多個節點，避免壓測端單機 CPU 成為流量瓶頸。
+* **指標監控**：使用 Prometheus 搭配 Grafana，重點監控 **Redis CPU**（監控 Lua 腳本是否吃滿單執行緒核心）與 **Kafka Consumer Lag**（積壓指標，Lag 迅速收斂回零代表最終一致性同步平滑）。
+* **混沌測試**：在持續加壓中手動模擬快取中斷或節點故障，驗證 API 能否自動熔斷降級（全部走保底，無報錯且零超賣）並在快取重啟後自癒。
+
+## 9. 未來展望與工程規劃 (Future Roadmap)
 
 * **Transactional Outbox 與新串 Kafka 觸達流水線**：為了解決 Redis 扣減與 Kafka 發送之間可能發生的不一致，並確保第三方通知服務在瞬間高併發流量下受到流量保護。未來規劃採用 Outbox 模式：API 開獎事件先推送至 `Topic-1`，落庫 Worker 消費並在 DB 事務中同步 Commit 業務明細與 `outbox` 記錄。隨後由獨立 Relay 撈取變更發布至觸達專用 `Topic-2`，最後由通知 Consumer 訂閱 `Topic-2` 進行流量控制發送，確保 MySQL 成功落庫後才派發，並極致保護第三方 API 免於流量過載。
 * **持久層框架升級 (GORM)**：採用混合模式。Admin CRUD 引入 GORM 提升開發效率；高併發核心抽獎與 Worker 批次落庫維持原生 SQL 以求極致性能。
 * **可觀測性建置 (Observability)**：導入 OpenTelemetry 進行鏈路追蹤，並使用 Prometheus / Grafana 監控 Redis 庫存與 Kafka Consumer Lag。
+
